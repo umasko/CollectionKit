@@ -19,10 +19,10 @@ struct MoveReducer<T: DiffAware> {
 
     for insert in inserts {
       guard let insertIndex = result.indices.first(where: {
-              !indicesToRemove.contains($0) && result[$0].insert?.item.map { T.compareContent($0, insert.item) } == true
+              !indicesToRemove.contains($0) && (result[$0].insert?.item).map { T.compareContent($0, insert.item) } == true
             }),
             let deleteIndex = result.indices.first(where: {
-              !indicesToRemove.contains($0) && result[$0].delete?.item.map { T.compareContent($0, insert.item) } == true
+              !indicesToRemove.contains($0) && (result[$0].delete?.item).map { T.compareContent($0, insert.item) } == true
             }),
             let insertChange = result[insertIndex].insert,
             let deleteChange = result[deleteIndex].delete
