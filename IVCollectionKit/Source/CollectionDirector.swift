@@ -18,8 +18,6 @@ open class CollectionDirector: NSObject {
     ///Forward scrollView delegate messages to specific object
     open weak var scrollDelegate: UIScrollViewDelegate?
 
-    private let sectionsLock = NSRecursiveLock()
-
     private weak var collectionView: UICollectionView?
     private lazy var viewsRegisterer: CollectionReusableViewsRegisterer? = {
         guard let cv = collectionView else { return nil }
@@ -29,12 +27,7 @@ open class CollectionDirector: NSObject {
     private var sectionIds: [String] = []
     private var lastCommitedSectionAndItemsIdentifiers: [String: [String]] = [:]
 
-    /// Flag indicating whether updates are currently in progress
-    private var isPerformingUpdates = false
-
     var isEmpty: Bool {
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         if sections.isEmpty {
             return true
         }
@@ -48,18 +41,12 @@ open class CollectionDirector: NSObject {
         #endif
     }
 
-    private func withSectionsLock<T>(_ block: () -> T) -> T {
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
-        return block()
-    }
-
     public init(collectionView: UICollectionView,
                 sections: [AbstractCollectionSection] = [],
                 shouldUseAutomaticViewRegistration: Bool = true,
                 shouldAdjustSupplementaryViewLayerZPosition: Bool = true)
     {
-        
+
         self.collectionView = collectionView
         super.init()
         collectionView.dataSource = self
@@ -67,13 +54,11 @@ open class CollectionDirector: NSObject {
         self.shouldUseAutomaticViewRegistration = shouldUseAutomaticViewRegistration
         self.shouldAdjustSupplementaryViewLayerZPosition = shouldAdjustSupplementaryViewLayerZPosition
     }
-    
+
     /// Safely retrieves a section at the given index
     /// - Parameter index: The section index
     /// - Returns: The section if it exists, nil otherwise
     private func section(for index: Int) -> AbstractCollectionSection? {
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         guard sections.indices.contains(index) else {
             return nil
         }
@@ -82,19 +67,11 @@ open class CollectionDirector: NSObject {
 
     /// Save all section and items and sections identifiers "snapshot". It will be used to compare current state during next update
     private func createSnapshot() {
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         sectionIds = sections.map { $0.identifier }
         lastCommitedSectionAndItemsIdentifiers = [:]
         for s in sections {
             lastCommitedSectionAndItemsIdentifiers[s.identifier] = s.currentItemIds()
         }
-    }
-
-    private var sectionsCount: Int {
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
-        return sections.count
     }
 }
 
@@ -108,24 +85,18 @@ extension CollectionDirector {
 
     public func remove(section: AbstractCollectionSection) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         guard let index = sections.firstIndex(where: { $0.identifier == section.identifier }) else { return }
         sections.remove(at: index)
     }
 
     public func removeSection(at index: Int) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         guard sections.indices.contains(index) else { return }
         sections.remove(at: index)
     }
 
     public func removeSections(in range: Range<Int>) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         let clampedRange = range.clamped(to: 0..<sections.count)
         guard !clampedRange.isEmpty else { return }
         sections.removeSubrange(clampedRange)
@@ -140,28 +111,22 @@ extension CollectionDirector {
 
     public func contains(section: AbstractCollectionSection) -> Bool {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         return sections.contains(where: { $0.identifier == section.identifier })
     }
 
     public func append(sectionsToAppend: [AbstractCollectionSection]) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         sections.append(contentsOf: sectionsToAppend)
     }
 
     public func remove(sectionsToRemove: [AbstractCollectionSection]) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         let indicies = sectionsToRemove.compactMap { sec in
             return self.sections.firstIndex(where: { $0 == sec })
         }
         sections.remove(at: indicies.sorted().reversed())
     }
-    
+
     /// Calculates and performs managed UICollectionView updates based on diff between sections array state
     /// after last update or reload and current state
     /// if `UICollectionView` is empty performs `reloadData` instead of batch updates to prevent crash
@@ -173,14 +138,6 @@ extension CollectionDirector {
     {
         assertMainThread()
 
-        // Prevent re-entrant updates which can cause state corruption
-        guard !isPerformingUpdates else {
-            completion?()
-            return
-        }
-
-        isPerformingUpdates = true
-
         let newSectionIds = sections.map { $0.identifier }
         let oldSectionIds = sectionIds
         let sectionChanges = diff(old: oldSectionIds, new: newSectionIds)
@@ -188,14 +145,11 @@ extension CollectionDirector {
         // if there is no sections in cv, it crashes :(
         if oldSectionIds.isEmpty {
             reload()
-            isPerformingUpdates = false
-            completion?()
             return
         }
 
         if sectionChanges.count > 50 && forceReloadDataForLargeAmountOfChanges {
             reload()
-            isPerformingUpdates = false
             completion?()
             return
         }
@@ -212,7 +166,6 @@ extension CollectionDirector {
         createSnapshot()
 
         guard let cv = collectionView else {
-            isPerformingUpdates = false
             completion?()
             return
         }
@@ -274,30 +227,22 @@ extension CollectionDirector {
             sectionChanges.compactMap { $0.move }.executeIfPresent { moves in
                 moves.forEach { cv.moveSection($0.fromIndex, toSection: $0.toIndex) }
             }
-        }) { [weak self, weak cv] _ in
-            self?.isPerformingUpdates = false
-
-            // Perform reloads AFTER batch updates complete
-            if let cv = cv {
-                let replaceIndexPaths = itemChanges.flatMap { $0.replaces }
-                if !replaceIndexPaths.isEmpty {
-                    cv.reloadItems(at: replaceIndexPaths)
-                }
-
-                let replaceSections = sectionChanges.compactMap { $0.replace?.index }
-                if !replaceSections.isEmpty {
-                    cv.reloadSections(IndexSet(replaceSections))
-                }
-            }
+        }) { _ in
             completion?()
+        }
+
+        itemChanges.flatMap { $0.replaces }.executeIfPresent { [weak cv] in
+            cv?.reloadItems(at: $0)
+        }
+
+        sectionChanges.compactMap { $0.replace?.index }.executeIfPresent { [weak cv] in
+            cv?.reloadSections(IndexSet($0))
         }
     }
     /// Removes all sections from director
     /// - parameter clearSections: if `true` removes all items from sections. Remember, that you should override `removeAll()` method in your custom section. This method removes all items from array in `CollectionSection` implementation and does nothing by default
     public func removeAll(clearSections: Bool = false) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         if clearSections {
             sections.forEach { $0.removeAll() }
         }
@@ -307,8 +252,6 @@ extension CollectionDirector {
 
     public func append(section: AbstractCollectionSection) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         sections.append(section)
     }
 
@@ -316,24 +259,18 @@ extension CollectionDirector {
                        after afterSection: AbstractCollectionSection)
     {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         guard let afterIndex = sections.firstIndex(where: { afterSection == $0 }) else { return }
         sections.insert(section, at: afterIndex + 1)
     }
 
     public func insert(section: AbstractCollectionSection, at index: Int) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         guard sections.indices.contains(index) else { return }
         sections.insert(section, at: index)
     }
 
     public func append(sections newSections: [AbstractCollectionSection]) {
         assertMainThread()
-        sectionsLock.lock()
-        defer { sectionsLock.unlock() }
         self.sections.append(contentsOf: newSections)
     }
 }
@@ -341,7 +278,7 @@ extension CollectionDirector {
 //MARK:- UICollectionViewDataSource
 extension CollectionDirector: UICollectionViewDataSource {
     open func numberOfSections(in collectionView: UICollectionView) -> Int {
-        return sectionsCount
+        return sections.count
     }
 
     open func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -553,7 +490,7 @@ extension CollectionDirector {
     open override func responds(to selector: Selector) -> Bool {
         return super.responds(to: selector) || scrollDelegate?.responds(to: selector) == true
     }
-    
+
     open override func forwardingTarget(for selector: Selector) -> Any? {
         return scrollDelegate?.responds(to: selector) == true ? scrollDelegate : super.forwardingTarget(for: selector)
     }
