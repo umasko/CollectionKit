@@ -11,14 +11,27 @@ import UIKit
 
 /// Class responsible for registering classes and xibs in `UICollectionView`
 final class CollectionReusableViewsRegisterer {
+    static let fallbackSupplementaryViewReuseIdentifier = "_CollectionKit_FallbackSupplementaryView"
+
     weak var collectionView: UICollectionView?
     private var cellReuseIdentifiers: Set<String> = []
     private var headersReuseIdentifiers: Set<String> = []
     private var footersReuseIdentifiers: Set<String> = []
     private var supplementaryReuseIdentifiers: Set<String> = []
-    
+    private var fallbackSupplementaryViewKinds: Set<String> = []
+
     init(collectionView: UICollectionView) {
         self.collectionView = collectionView
+    }
+
+    func registerFallbackSupplementaryViewIfNeeded(kind: String) {
+        guard !fallbackSupplementaryViewKinds.contains(kind) else { return }
+        fallbackSupplementaryViewKinds.insert(kind)
+        collectionView?.register(
+            UICollectionReusableView.self,
+            forSupplementaryViewOfKind: kind,
+            withReuseIdentifier: Self.fallbackSupplementaryViewReuseIdentifier
+        )
     }
     
     func registerCellIfNeeded(reuseIdentifier: String, cellClass: AnyClass) {

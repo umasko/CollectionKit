@@ -32,6 +32,10 @@ open class CollectionDirector: NSObject {
     /// Flag indicating whether updates are currently in progress
     private var isPerformingUpdates = false
 
+    /// Flag indicating that another update was requested while a batch update was in progress
+    private var needsUpdateAfterCurrentBatch = false
+    private var pendingUpdateCompletion: (() -> Void)?
+
     var isEmpty: Bool {
         sectionsLock.lock()
         defer { sectionsLock.unlock() }
@@ -173,9 +177,14 @@ extension CollectionDirector {
     {
         assertMainThread()
 
-        // Prevent re-entrant updates which can cause state corruption
+        // If a batch update is already in progress, flag for retry after it completes
         guard !isPerformingUpdates else {
-            completion?()
+            needsUpdateAfterCurrentBatch = true
+            let existing = pendingUpdateCompletion
+            pendingUpdateCompletion = {
+                existing?()
+                completion?()
+            }
             return
         }
 
@@ -288,8 +297,25 @@ extension CollectionDirector {
                 if !replaceSections.isEmpty {
                     cv.reloadSections(IndexSet(replaceSections))
                 }
+
+                // Invalidate layout after batch updates to pick up supplementary view changes
+                // (must be AFTER batch completes, not before — calling it before performBatchUpdates
+                // causes compositional layouts to fetch NEW-state section definitions while UIKit
+                // is still trying to animate the OLD→NEW transition, crashing for sections that
+                // changed emptiness)
+                cv.collectionViewLayout.invalidateLayout()
             }
             completion?()
+
+            // Process any updates that were requested while batch update was in progress
+            if let self, self.needsUpdateAfterCurrentBatch {
+                self.needsUpdateAfterCurrentBatch = false
+                let pendingCompletion = self.pendingUpdateCompletion
+                self.pendingUpdateCompletion = nil
+                DispatchQueue.main.async {
+                    self.performUpdates(completion: pendingCompletion)
+                }
+            }
         }
     }
     /// Removes all sections from director
@@ -371,7 +397,7 @@ extension CollectionDirector: UICollectionViewDataSource {
 
     open func collectionView(_ collectionView: UICollectionView, viewForSupplementaryElementOfKind kind: String, at indexPath: IndexPath) -> UICollectionReusableView {
         guard let section = self.section(for: indexPath.section) else {
-            return UICollectionReusableView()
+            return dequeueFallbackSupplementaryView(collectionView: collectionView, ofKind: kind, for: indexPath)
         }
 
         if let item = section.supplementaryItems[kind] {
@@ -385,7 +411,9 @@ extension CollectionDirector: UICollectionViewDataSource {
 
         switch kind {
         case UICollectionView.elementKindSectionHeader:
-            guard let header = section.headerItem else { return UICollectionReusableView() }
+            guard let header = section.headerItem else {
+                return dequeueFallbackSupplementaryView(collectionView: collectionView, ofKind: kind, for: indexPath)
+            }
             if shouldUseAutomaticViewRegistration {
                 viewsRegisterer?.registerHeaderFooterViewIfNeeded(reuseIdentifier: header.reuseIdentifier, viewClass: header.viewType, kind: kind)
             }
@@ -393,7 +421,9 @@ extension CollectionDirector: UICollectionViewDataSource {
             header.configure(headerView)
             return headerView
         case UICollectionView.elementKindSectionFooter:
-            guard let footer = section.footerItem else { return UICollectionReusableView() }
+            guard let footer = section.footerItem else {
+                return dequeueFallbackSupplementaryView(collectionView: collectionView, ofKind: kind, for: indexPath)
+            }
             if shouldUseAutomaticViewRegistration {
                 viewsRegisterer?.registerHeaderFooterViewIfNeeded(reuseIdentifier: footer.reuseIdentifier, viewClass: footer.viewType, kind: kind)
             }
@@ -402,8 +432,17 @@ extension CollectionDirector: UICollectionViewDataSource {
             return footerView
 
         default:
-            return UICollectionReusableView()
+            return dequeueFallbackSupplementaryView(collectionView: collectionView, ofKind: kind, for: indexPath)
         }
+    }
+
+    private func dequeueFallbackSupplementaryView(collectionView: UICollectionView, ofKind kind: String, for indexPath: IndexPath) -> UICollectionReusableView {
+        viewsRegisterer?.registerFallbackSupplementaryViewIfNeeded(kind: kind)
+        return collectionView.dequeueReusableSupplementaryView(
+            ofKind: kind,
+            withReuseIdentifier: CollectionReusableViewsRegisterer.fallbackSupplementaryViewReuseIdentifier,
+            for: indexPath
+        )
     }
 }
 
