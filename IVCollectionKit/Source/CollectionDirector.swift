@@ -96,6 +96,24 @@ open class CollectionDirector: NSObject {
         defer { sectionsLock.unlock() }
         return sections.count
     }
+
+    /// Filters out any diff changes that reference out-of-bounds indices.
+    /// This guards against edge cases in the diff algorithms without modifying them.
+    private func sanitizedChanges<T>(_ changes: [Change<T>], oldCount: Int, newCount: Int) -> [Change<T>] {
+        return changes.filter { change in
+            switch change {
+            case .delete(let d):
+                return d.index >= 0 && d.index < oldCount
+            case .insert(let i):
+                return i.index >= 0 && i.index < newCount
+            case .replace(let r):
+                return r.index >= 0 && r.index < newCount
+            case .move(let m):
+                return m.fromIndex >= 0 && m.fromIndex < oldCount
+                    && m.toIndex >= 0 && m.toIndex < newCount
+            }
+        }
+    }
 }
 
 //MARK:- Public
@@ -183,7 +201,11 @@ extension CollectionDirector {
 
         let newSectionIds = sections.map { $0.identifier }
         let oldSectionIds = sectionIds
-        let sectionChanges = diff(old: oldSectionIds, new: newSectionIds)
+        let sectionChanges = sanitizedChanges(
+            diff(old: oldSectionIds, new: newSectionIds),
+            oldCount: oldSectionIds.count,
+            newCount: newSectionIds.count
+        )
 
         // if there is no sections in cv, it crashes :(
         if oldSectionIds.isEmpty {
@@ -204,7 +226,12 @@ extension CollectionDirector {
         var itemChanges = [ChangeWithIndexPath]()
         for (idx, section) in sections.enumerated() {
             let oldItemIds = lastCommitedSectionAndItemsIdentifiers[section.identifier] ?? section.currentItemIds()
-            let diff_ = diff(old: oldItemIds, new: section.currentItemIds())
+            let newItemIds = section.currentItemIds()
+            let diff_ = sanitizedChanges(
+                diff(old: oldItemIds, new: newItemIds),
+                oldCount: oldItemIds.count,
+                newCount: newItemIds.count
+            )
             guard !diff_.isEmpty else { continue }
             itemChanges.append(converter.convert(changes: diff_, section: idx))
         }

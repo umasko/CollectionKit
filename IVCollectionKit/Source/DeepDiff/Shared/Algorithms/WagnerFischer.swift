@@ -93,9 +93,7 @@ class Row<T> {
   /// Reset with empty slots
   /// First slot is .delete
   func reset(count: Int, indexInOld: Int, oldItem: T) {
-    guard count > 0 else { return }
-
-    if slots.isEmpty || slots.count != count {
+    if slots.isEmpty {
       slots = Array(repeatElement([], count: count))
     }
 
@@ -108,26 +106,12 @@ class Row<T> {
   /// Use .replace from previousRow
   func update(indexInNew: Int, previousRow: Row) {
     let slotIndex = convert(indexInNew: indexInNew)
-    guard slotIndex > 0,
-          slotIndex < slots.count,
-          slotIndex - 1 < previousRow.slots.count else {
-      return
-    }
     slots[slotIndex] = previousRow.slots[slotIndex - 1]
   }
 
   /// Choose the min
   func updateWithMin(previousRow: Row, indexInNew: Int, newItem: T, indexInOld: Int, oldItem: T) {
     let slotIndex = convert(indexInNew: indexInNew)
-
-    // Bounds checking to prevent crashes
-    guard slotIndex > 0,
-          slotIndex < slots.count,
-          slotIndex <= previousRow.slots.count,
-          slotIndex - 1 < previousRow.slots.count else {
-      return
-    }
-
     let topSlot = previousRow.slots[slotIndex]
     let leftSlot = slots[slotIndex - 1]
     let topLeftSlot = previousRow.slots[slotIndex - 1]
@@ -165,7 +149,6 @@ class Row<T> {
 
   //// Last slot
   func lastSlot() -> [Change<T>] {
-    guard !slots.isEmpty else { return [] }
     return slots[slots.count - 1]
   }
 
